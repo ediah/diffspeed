@@ -36,6 +36,9 @@ def timing_loop(f, N, rtime):
             f.setup()
         start = time.perf_counter()
         f()
+
+        if 'teardown' in f.__dir__():
+            f.teardown()
         rtime += [time.perf_counter() - start]
     
     print('.', end='')
@@ -60,7 +63,7 @@ def format_time(time):
 
 
 class DiffSpeed:
-    def __init__(self, runtime = 5, minruns = 100, maxtime = 20, globals = None,
+    def __init__(self, runtime = 1, minruns = 100, maxtime = 2, globals = None,
                  only_unstable = False):
         log = run([
             'git', 'log', '--pretty=%H###%at###%ar###%s', '--no-notes'
@@ -68,7 +71,11 @@ class DiffSpeed:
         self.commits = [commit.split('###') for commit in log.split('\n')][::-1]
         self.last_commit = self.commits[-1]
         self.hashes = [commit[0] for commit in self.commits]
-        self.groups = [file[:-3] for file in list(os.walk('benchmarks'))[0][2]]
+        self.groups = [
+            file[:-3] 
+            for file in list(os.walk('benchmarks'))[0][2] 
+            if not file.startswith('_')
+        ]
         self.benchmarks = []
         for instr in self.groups:
             with open('benchmarks/' + instr + '.py', 'r') as file:
