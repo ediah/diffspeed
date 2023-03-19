@@ -46,8 +46,11 @@ def timing_loop(f, N, rtime):
 
 def format_time(time):
     expnorm = ceil(-log(time, 10))
-    exp = 3 * ceil(expnorm / 3)
-    normalized = int(time * 10 ** exp)
+    exp = 3 * min(ceil(expnorm / 3), 3)
+    normalized = round(time * 10 ** exp, 2)
+    if normalized >= 100:
+        normalized = int(normalized)
+    
     if exp == 0:
         suffix = ''
     elif exp == 3:
@@ -56,14 +59,12 @@ def format_time(time):
         suffix = 'μ'
     elif exp == 9:
         suffix = 'n'
-    else:
-        suffix = 'p'
     
     return f'{normalized} {suffix}s'
 
 
 class DiffSpeed:
-    def __init__(self, runtime = 1, minruns = 100, maxtime = 2, globals = None,
+    def __init__(self, runtime = 2, minruns = 100, maxtime = 5, globals = None,
                  only_unstable = False):
         log = run([
             'git', 'log', '--pretty=%H###%at###%ar###%s', '--no-notes'
@@ -157,18 +158,28 @@ class DiffSpeed:
 
     def filter_unstable(self, group):
         data = self.load(group)
+        bench = self.benchmarks[self.groups.index(group)]
+        bfs = self.get_bfuncs(bench)
         if not self.only_unstable:
-            return list(data.keys())
+            return [bf.name for bf in bfs]
 
         name_filter = []
-        for name in data:
-            if self.last_commit[0] in data[name]:
-                if data[name][self.last_commit[0]]['unstable']:
-                    name_filter += [name]
+        for bf in bfs:
+            if bf.name not in data:
+                name_filter += [bf.name]
+                continue
+
+            if self.last_commit[0] in data[bf.name]:
+                if data[bf.name][self.last_commit[0]]['unstable']:
+                    name_filter += [bf.name]
             else:
-                name_filter += [name]
+                name_filter += [bf.name]
 
         return name_filter
+
+    def get_bfuncs(self, bench):
+        bfs = list(filter(lambda x: x.startswith('bench_'), bench.__dir__()))
+        return map(lambda x: bench.__getattribute__(x)(self.globals), bfs)
 
     def run(self):
         for group, bench in zip(self.groups, self.benchmarks):
@@ -181,9 +192,9 @@ class DiffSpeed:
             if 'setup' in bench.__dir__():
                 bench.setup(self.globals)
             
-            bfs = list(filter(lambda x: x.startswith('bench_'), bench.__dir__()))
+            bfuncs = self.get_bfuncs(bench)
 
-            for bf in map(lambda x: bench.__getattribute__(x)(self.globals), bfs):
+            for bf in bfuncs:
                 if bf.name not in name_filter:
                     continue
                 print(f"Benchmarking {bf.name}", end='')
@@ -237,6 +248,8 @@ class DiffSpeed:
                         if all_data[name][commit]['unstable']:
                             rowstr += '?!'
                         row += [rowstr]
+                    else:
+                        row += [None]
                 table_data += [ [name] + row ]
             
             tables += [tabulate(
