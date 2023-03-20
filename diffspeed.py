@@ -3,10 +3,9 @@ import subprocess
 import os
 import json
 import time
-import sys
 from tabulate import tabulate
 from math import log, ceil
-from colorama import Fore, Style
+from colorama import Fore
 import shutil
 
 def run(cmd, instr = ''):
@@ -76,7 +75,7 @@ def format_time(time):
 
 
 class DiffSpeed:
-    def __init__(self, runtime = 1, minruns = 5, maxtime = 10, globals = None,
+    def __init__(self, runtime = 1, minruns = 100, maxtime = 10, globals = None,
                  only_unstable = False, unstable_coeff = 0.05, threshold = 0.1,
                  nlast_commits = 10):
         log = run([
@@ -118,11 +117,6 @@ class DiffSpeed:
         self.threshold = threshold
         # Количество последних коммитов в отчёте
         self.nlast_commits = nlast_commits
-
-    def calibrate(self, f):
-        self.rtime = []
-        timing_loop(f, self.minruns, self.rtime)
-        self.nruns = int(self.minruns * self.running_time / sum(self.rtime))
     
     def recalibrate(self, dt):
         self.nruns = int(self.nruns * self.running_time / dt)
@@ -160,13 +154,12 @@ class DiffSpeed:
         stats += [ [med, dev] ]
 
     def timeit(self, f):
-        # К этому моменту могло случиться так, что всё выделенное время было потрачено
-        # на калибровку. Поэтому рациональнее сразу использовать результаты калибровки
+        self.rtime = []
         stats = []
-        if (olds := sum(self.rtime)) >= self.maxtime:
-            self.update_stats(stats)
-
+        olds = 0
         self.iteration = 0
+
+        self.nruns = self.minruns
         while olds < self.maxtime:
             start = time.perf_counter()
 
@@ -266,7 +259,6 @@ class DiffSpeed:
                 if bf.name not in name_filter:
                     continue
 
-                self.calibrate(bf)
                 data = self.timeit(bf)
 
                 med = data['median']
