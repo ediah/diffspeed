@@ -7,6 +7,7 @@ import sys
 from tabulate import tabulate
 from math import log, ceil
 from colorama import Fore, Style
+import shutil
 
 def run(cmd, instr = ''):
     p = subprocess.run(cmd, input=instr.encode(),
@@ -18,11 +19,11 @@ def run(cmd, instr = ''):
     return p.stdout.decode('utf-8').strip()
 
 def median(list):
-    list.sort()
-    if (L := len(list)) % 2 == 1:
-        return list[L // 2]
+    sl = sorted(list)
+    if (L := len(sl)) % 2 == 1:
+        return sl[L // 2]
     else:
-        return (list[L // 2 - 1] + list[L // 2]) / 2
+        return (sl[L // 2 - 1] + sl[L // 2]) / 2
 
 def MAD(list, med = None):
     if med is None:
@@ -30,19 +31,28 @@ def MAD(list, med = None):
     
     return median([abs(x - med) for x in list])
 
+def gmean(list):
+    prod = 1
+    exps = 0
+    for x in list:
+        exp = ceil(-log(x, 10))
+        prod *= x * 10 ** exp
+        exps += exp
+    k = 10 ** (exps / len(list))
+    norm_gmean = prod ** (1 / len(list))
+    return norm_gmean / k
+
 def timing_loop(f, N, rtime):
-    for i in range(N):
+    for _ in range(N):
         if 'setup' in f.__dir__():
             f.setup()
+
         start = time.perf_counter()
         f()
-
+        rtime += [time.perf_counter() - start]
+        
         if 'teardown' in f.__dir__():
             f.teardown()
-        rtime += [time.perf_counter() - start]
-    
-    print('.', end='')
-    sys.stdout.flush()
 
 def format_time(time):
     expnorm = ceil(-log(time, 10))
@@ -54,17 +64,19 @@ def format_time(time):
     if exp == 0:
         suffix = ''
     elif exp == 3:
-        suffix = 'm'
+        suffix = 'м'
     elif exp == 6:
-        suffix = 'μ'
+        suffix = 'мк'
     elif exp == 9:
-        suffix = 'n'
+        suffix = 'н'
+    else:
+        suffix = 'п' # Вряд ли такое возможно, но случай 'else' покрыть надо...
     
-    return f'{normalized} {suffix}s'
+    return f'{normalized} {suffix}с'
 
 
 class DiffSpeed:
-    def __init__(self, runtime = 2, minruns = 100, maxtime = 5, globals = None,
+    def __init__(self, runtime = 1, minruns = 5, maxtime = 10, globals = None,
                  only_unstable = False):
         log = run([
             'git', 'log', '--pretty=%H###%at###%ar###%s', '--no-notes'
@@ -91,34 +103,80 @@ class DiffSpeed:
         self.running_time = runtime
         self.minruns = minruns
         self.maxtime = maxtime
-        self.unstable_coeff = 0.15
+        # Стабильным будем считать результат, у которого отклонение составляет
+        # менее 5% от среднего
+        self.unstable_coeff = 0.05
         self.only_unstable = only_unstable
+        self.iteration = 0
 
     def calibrate(self, f):
         self.rtime = []
         timing_loop(f, self.minruns, self.rtime)
         self.nruns = int(self.minruns * self.running_time / sum(self.rtime))
     
+    def recalibrate(self, dt):
+        self.nruns = int(self.nruns * self.running_time / dt)
+    
+    def print_status(self, name, t = None, tail = None):
+        head = f'{name}'
+        
+        if tail is None:
+            if t is None:
+                tail = '(?%, '
+            else:
+                tail = f'({round(100 * t / self.maxtime, 2)}%, '
+            
+            if self.nruns >= 1_000_000:
+                tail += f'{self.nruns // 1_000_000}м. ит./круг)'
+            elif self.nruns >= 1000:
+                tail += f'{self.nruns // 1000}т. ит./круг)'
+            else:
+                tail += f'{self.nruns} ит./круг)'
+
+        width = max(min(shutil.get_terminal_size()[0], 80) - len(head), 0)
+        mid = '.' * (self.iteration % (width - len(tail)))
+        status = head + mid
+        print('\r{0}{1:>{w}}'.format(status, tail, w = width - len(mid)), end='', flush=True)
+    
+    def update_stats(self, stats):
+        med = median(self.rtime)
+        dev = MAD(self.rtime, med)
+        if dev > med * self.unstable_coeff:
+            return
+
+        if med == 0 or dev == 0:
+            return
+        
+        stats += [ [med, dev] ]
+
     def timeit(self, f):
+        # К этому моменту могло случиться так, что всё выделенное время было потрачено
+        # на калибровку. Поэтому рациональнее сразу использовать результаты калибровки
         stats = []
-        while sum(self.rtime) < self.maxtime:
+        if (olds := sum(self.rtime)) >= self.maxtime:
+            self.update_stats(stats)
+
+        self.iteration = 0
+        while olds < self.maxtime:
+            start = time.perf_counter()
+
+            self.rtime = []
             timing_loop(f, self.nruns, self.rtime)
-            med = median(self.rtime[:-self.nruns])
-            dev = MAD(self.rtime[:-self.nruns], med)
-            if dev <= med * self.unstable_coeff:
-                stats += [ [med, dev] ]
+            self.update_stats(stats)
+
+            dt = time.perf_counter() - start
+            olds += dt
+            
+            self.recalibrate(dt)
+            self.print_status(f.name, olds)
+            self.iteration += 1
 
         if len(stats) == 0:
-            print(' (unstable)')
             unstable = True
         else:
-            med = 1
-            dev = 1
-            for s in stats:
-                med *= s[0]
-                dev *= s[1]
-            med = med ** (1 / len(stats))
-            dev = dev ** (1 / len(stats))
+            # Считаем геометрическое среднее у наиболее стабильных результатов
+            med = gmean([s[0] for s in stats])
+            dev = gmean([s[1] for s in stats])
             unstable = False
         
         results = {
@@ -188,7 +246,7 @@ class DiffSpeed:
             if len(name_filter) == 0:
                 continue
             
-            print(f"Benchmarking group {group}...")
+            print(f"Замер группы {group}...")
             if 'setup' in bench.__dir__():
                 bench.setup(self.globals)
             
@@ -197,12 +255,14 @@ class DiffSpeed:
             for bf in bfuncs:
                 if bf.name not in name_filter:
                     continue
-                print(f"Benchmarking {bf.name}", end='')
-                sys.stdout.flush()
 
                 self.calibrate(bf)
                 data = self.timeit(bf)
 
+                med = data['median']
+                dev = data['dev']
+                unst = '(нестаб.) ' if data['unstable'] else ''
+                self.print_status(bf.name, tail = unst + format_time(med) + ' +- ' + format_time(dev))
                 print()
 
                 self.save(group, bf.name, data)
