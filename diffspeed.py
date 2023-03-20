@@ -77,7 +77,8 @@ def format_time(time):
 
 class DiffSpeed:
     def __init__(self, runtime = 1, minruns = 5, maxtime = 10, globals = None,
-                 only_unstable = False):
+                 only_unstable = False, unstable_coeff = 0.05, threshold = 0.1,
+                 nlast_commits = 10):
         log = run([
             'git', 'log', '--pretty=%H###%at###%ar###%s', '--no-notes'
         ])
@@ -98,16 +99,25 @@ class DiffSpeed:
             os.mkdir('benchmarks/data')
         
         self.data = list(os.walk('benchmarks/data'))[0][2]
-
-        self.globals = globals
-        self.running_time = runtime
-        self.minruns = minruns
-        self.maxtime = maxtime
-        # Стабильным будем считать результат, у которого отклонение составляет
-        # менее 5% от среднего
-        self.unstable_coeff = 0.05
-        self.only_unstable = only_unstable
         self.iteration = 0
+
+        # Глобальные переменные, которые будут переданы измеряемой функции
+        self.globals = globals
+        # Сколько времени должен занимать один круг?
+        self.running_time = runtime
+        # Сколько запусков необходимо провести обязательно?
+        self.minruns = minruns
+        # Сколько времени максимально тестировать одну функцию?
+        self.maxtime = maxtime
+        # Сколько процентов отклонение может составлять от среднего,
+        # чтобы результат можно было считать стабильным?
+        self.unstable_coeff = unstable_coeff
+        # Запустить замеры только для результатов, не отмеченных стабильными, или для всех?
+        self.only_unstable = only_unstable
+        # От скольки процентов изменения скорости считать значимыми?
+        self.threshold = threshold
+        # Количество последних коммитов в отчёте
+        self.nlast_commits = nlast_commits
 
     def calibrate(self, f):
         self.rtime = []
@@ -267,6 +277,27 @@ class DiffSpeed:
 
                 self.save(group, bf.name, data)
     
+    def format_row_table(self, data, commit, head):
+        med = data[commit]['median']
+        dev = data[commit]['dev']
+        if commit == head:
+            rowstr = format_time(med)
+        else:
+            headmed = data[head]['median']
+            k = round(med / headmed, 2)
+            rowstr = format_time(med)
+            if abs(k - 1) >= self.threshold:
+                rowstr += f' (x{k})'
+                if k > 1:
+                    rowstr = Fore.GREEN + rowstr + Fore.RESET
+                elif k < 1:
+                    rowstr = Fore.RED + rowstr + Fore.RESET
+
+        if data[commit]['unstable']:
+            rowstr += '?!'
+        
+        return rowstr
+
     def report(self):
         tables = []
         for group in self.groups:
@@ -281,6 +312,7 @@ class DiffSpeed:
                     for commit in commits
                 ]
             all_commits = [c for c in sorted(set(all_commits), key=lambda x: x[1])]
+            all_commits = all_commits[-self.nlast_commits:]
             hashes = [c[0] for c in all_commits]
             dates = [c[2] for c in all_commits]
             head = hashes[-1]
@@ -292,21 +324,7 @@ class DiffSpeed:
                 row = []
                 for commit in hashes:
                     if commit in all_data[name]:
-                        med = all_data[name][commit]['median']
-                        dev = all_data[name][commit]['dev']
-                        if commit == head:
-                            rowstr = format_time(med)
-                        else:
-                            headmed = all_data[name][head]['median']
-                            k = round(med / headmed, 2)
-                            rowstr = format_time(med) + f' (x{k})'
-                            if k > 1:
-                                rowstr = Fore.GREEN + rowstr + Fore.RESET
-                            elif k < 1:
-                                rowstr = Fore.RED + rowstr + Fore.RESET
-
-                        if all_data[name][commit]['unstable']:
-                            rowstr += '?!'
+                        rowstr = self.format_row_table(all_data[name], commit, head)
                         row += [rowstr]
                     else:
                         row += [None]
